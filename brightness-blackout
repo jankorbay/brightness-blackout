@@ -1,0 +1,32 @@
+#!/bin/bash
+# Blacks out the screen (gamma 0) when Cinnamon brightness hits 0%; restores it when raised.
+# On OLED, black pixels emit no light, so this is a full blackout.
+set -u
+
+DEST=org.cinnamon.SettingsDaemon.Power
+IFACE=$DEST.Screen
+OUT=$(xrandr | awk '/ connected primary/{print $1; exit}')
+[ -n "$OUT" ] || OUT=$(xrandr | awk '/ connected/{print $1; exit}')
+[ -n "$OUT" ] || { echo "brightness-blackout: no connected output" >&2; exit 1; }
+
+black=0
+set_gamma() { xrandr --output "$OUT" --brightness "$1"; }
+apply() {
+  local pct
+  pct=$(gdbus call --session -d $DEST -o /org/cinnamon/SettingsDaemon/Power -m $IFACE.GetPercentage 2>/dev/null) || return
+  if [[ $pct == "(uint32 0,)" ]]; then
+    ((black)) || { set_gamma 0; black=1; }
+  elif ((black)); then
+    set_gamma 1; black=0
+  fi
+}
+
+# Never leave the screen black if this script stops.
+trap 'set_gamma 1; kill $MON 2>/dev/null' EXIT
+trap 'exit' INT TERM HUP
+
+apply
+# Process substitution (not a pipe) keeps the loop in this shell, so traps fire during `read`.
+exec 3< <(dbus-monitor --session "type='signal',interface='$IFACE',member='Changed'")
+MON=$!
+while read -r line <&3; do [[ $line == signal* ]] && apply; done
